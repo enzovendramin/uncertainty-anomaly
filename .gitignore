@@ -1,0 +1,11 @@
+# data and outputs are not committed
+data/
+results/
+*.npz
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
