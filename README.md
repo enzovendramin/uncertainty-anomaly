@@ -17,18 +17,18 @@ $n$ calibration points known to be normal and unseen by the model.
 For a test point with score $s$, under $H_0$: "the point is normal",
 
 $$
-p = \frac{1 + \#\{i : s_i \ge s\}}{n+1}, \qquad P_{H_0}(p \le a) \le a .
+p = \frac{1 + \lvert\{i : s_i \ge s\}\rvert}{n+1}, \qquad P_{H_0}(p \le a) \le a .
 $$
 
 E-values follow Ren & Barber (2023): run BH at level $q$ on the $p$-values of the batch,
 let $T$ be the smallest flagged score, and set
 
 $$
-e = \frac{n+1}{1 + \#\{i : s_i \ge T\}}\,\mathbb{1}\{s \ge T\}, \qquad \mathbb{E}_{H_0}[e] \le 1 .
+e = \frac{n+1}{1 + \lvert\{i : s_i \ge T\}\rvert}\,\mathbb{1}\{s \ge T\}, \qquad \mathbb{E}_{H_0}[e] \le 1 .
 $$
 
 e-BH (Wang & Ramdas 2022) sorts $e_{(1)} \ge \dots \ge e_{(m)}$ and flags the top
-$k^\* = \max\{k : e_{(k)} \ge m/(qk)\}$, which controls $\mathrm{FDR} \le q$ under arbitrary
+$k^{*} = \max\{k : e_{(k)} \ge m/(qk)\}$, which controls $\mathrm{FDR} \le q$ under arbitrary
 dependence. Averages of e-values (over seeds, splits or models) remain e-values.
 
 Scores compared:
@@ -38,7 +38,7 @@ Scores compared:
 | `knn`, `iforest` | classical baselines |
 | `tabpfn_error` | $1 - \hat p(\text{observed bin})$, TabPFN predicting each column from the others (as TabPFN-OD) |
 | `tabpfn_entropy` | $H(\hat p)/\log K$ — uncertainty, blind to the observed value |
-| `tabpfn_setsize` | $|\{y : 1-\hat p(y) \le \hat q\}| / K$ — the same through a conformal set (LAC, $\alpha = 0.1$) |
+| `tabpfn_setsize` | $\lvert\{y : 1-\hat p(y) \le \hat q\}\rvert / K$ — the same through a conformal set (LAC, $\alpha = 0.1$) |
 
 ## Data
 
