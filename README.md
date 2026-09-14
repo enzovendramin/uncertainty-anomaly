@@ -66,6 +66,17 @@ python src/summarize.py results/baseline.csv
 python src/q2.py --tag tabpfn                # Q2: precision at a budget, offline from saved scores
 ```
 
+## Findings so far (100 representative datasets)
+
+- Q1: regression uncertainty (`tabpfnreg_std`) AUROC 0.66, error (`nll`) 0.72, kNN 0.76;
+  the binned classifier (0.45) was a measurement artefact.
+- Q2: at a fixed review budget uncertainty does not beat kNN; kNN + error gains ~0.02 (n.s.).
+- Q3: FDR guarantee holds (pooled FDP 0.07–0.08 at q = 0.1) but the list is empty on ~75%
+  of datasets; batches of 200 rows raise that to 45%; keep ≥ 300 calibration rows.
+  Combining scores: merge first (mean of −log p), then calibrate once — averaging
+  Ren & Barber e-values across scores or splits keeps validity but halves power.
+  Single-split alert lists overlap only 29–56% between splits.
+
 ## References
 
 Angelopoulos & Bates (2021) · Bates, Candès, Lei, Romano, Sesia (2023) ·
