@@ -39,8 +39,6 @@ Scores compared:
 | `tabpfn_error` | $1 - \hat p(\text{observed bin})$, TabPFN predicting each column from the others (as TabPFN-OD) |
 | `tabpfn_entropy` | $H(\hat p)/\log K$ — uncertainty, blind to the observed value |
 | `tabpfn_setsize` | $\lvert\{y : 1-\hat p(y) \le \hat q\}\rvert / K$ — the same through a conformal set (LAC, $\alpha = 0.1$) |
-| `tabpfnreg_std`, `tabpfnreg_width90` | predictive std / 90% interval width of the TabPFN *regressor* (no binning): uncertainty that can grow away from the data |
-| `tabpfnreg_nll`, `tabpfnreg_pit` | $-\log \hat p(x_j)$ and $\lvert 2F(x_j)-1\rvert$ from the same predictive distribution: error-type |
 
 ## Data
 
@@ -65,6 +63,7 @@ python src/data.py                           # download the representative subse
 python src/run.py --scores knn iforest --seeds 0 1 2 --tag baseline
 python src/run.py --scores tabpfn tabpfn_reg --seeds 0 --max-calib 3000 --max-test 4000 --tag tabpfn
 python src/summarize.py results/baseline.csv
+python src/q2.py --tag tabpfn                # Q2: precision at a budget, offline from saved scores
 ```
 
 ## References
