@@ -289,3 +289,131 @@ def tabpfn_reg_scores(
 
 
 SCORES["tabpfn_reg"] = tabpfn_reg_scores
+
+
+# ---------------------------------------------------------------------------
+# Model zoo: other models' uncertainty in the same column-prediction frame
+# ---------------------------------------------------------------------------
+
+def _predict_columns(X_fit, X_query, seed, fit_predict, max_context, max_target_columns,
+                     max_input_features, min_unique=11, cache=None, name="model"):
+    """
+    Shared loop: pick target columns, z-score each with the context rows, hand
+    (context inputs, context target, query inputs, query target) to
+    `fit_predict`, which returns a dict of per-row arrays (larger = less
+    normal). Arrays are averaged over the predicted columns.
+    """
+    rng = np.random.default_rng(seed)
+    n_fit, d = X_fit.shape
+    ctx_rows = rng.permutation(n_fit)[: min(n_fit, max_context)]
+    targets = [j for j in rng.permutation(d) if len(np.unique(X_fit[ctx_rows, j])) >= min_unique]
+    targets = targets[:max_target_columns]
+    if not targets:
+        raise RuntimeError("no numeric column to predict")
+
+    sums, raw = {}, {"targets": []}
+    for j in targets:
+        mu, sd = X_fit[ctx_rows, j].mean(), X_fit[ctx_rows, j].std() + 1e-12
+        z_ctx, z_query = (X_fit[ctx_rows, j] - mu) / sd, (X_query[:, j] - mu) / sd
+        others = np.array([c for c in range(d) if c != j])
+        if len(others) > max_input_features:
+            others = rng.choice(others, max_input_features, replace=False)
+        # standardize inputs with context statistics (GP and trees like it)
+        Xc = X_fit[np.ix_(ctx_rows, others)]
+        m, s = Xc.mean(0), Xc.std(0) + 1e-12
+        out = fit_predict((Xc - m) / s, z_ctx, (X_query[:, others] - m) / s, z_query, seed)
+        for k, v in out.items():
+            sums[k] = sums.get(k, 0) + v
+            raw.setdefault(k, []).append(v.astype(np.float32))
+        raw["targets"].append(j)
+    if cache is not None:
+        _save_raw(cache, name, raw)
+    return {k: v / len(targets) for k, v in sums.items()}
+
+
+def _gaussian_nll(mean, std, z_obs):
+    std = np.maximum(std, 1e-6)
+    return 0.5 * np.log(2 * np.pi * std ** 2) + 0.5 * ((z_obs - mean) / std) ** 2
+
+
+def gp_scores(X_fit, X_query, seed=0, max_context=300, max_target_columns=10,
+              max_input_features=30, cache=None):
+    """
+    Gaussian process (RBF + noise) predicting each column. Its predictive std
+    grows with the distance to the context rows by construction, so this is
+    the positive control for "uncertainty that knows it is far from the data".
+      gp_std  predictive std (uncertainty)      gp_nll  Gaussian NLL (error)
+    """
+    from sklearn.gaussian_process import GaussianProcessRegressor
+    from sklearn.gaussian_process.kernels import RBF, ConstantKernel, WhiteKernel
+
+    def fit_predict(Xc, zc, Xq, zq, seed):
+        kernel = ConstantKernel() * RBF(1.0) + WhiteKernel()   # one shared length-scale
+        gp = GaussianProcessRegressor(kernel, normalize_y=True, n_restarts_optimizer=0, random_state=seed).fit(Xc, zc)
+        mean, std = gp.predict(Xq, return_std=True)
+        return {"gp_std": std, "gp_nll": np.clip(_gaussian_nll(mean, std, zq), -50, 50)}
+
+    return _predict_columns(X_fit, X_query, seed, fit_predict, max_context, max_target_columns,
+                            max_input_features, cache=cache, name="gp")
+
+
+def catboost_scores(X_fit, X_query, seed=0, max_context=1000, max_target_columns=10,
+                    max_input_features=100, cache=None):
+    """
+    CatBoost with virtual ensembles (RMSEWithUncertainty + posterior sampling)
+    predicting each column. It reports two kinds of uncertainty:
+      cb_knowledge  disagreement between ensemble members = epistemic
+      cb_data       predicted noise level = aleatoric
+      cb_nll        Gaussian NLL with the total variance (error)
+    """
+    from catboost import CatBoostRegressor
+
+    def fit_predict(Xc, zc, Xq, zq, seed):
+        cb = CatBoostRegressor(loss_function="RMSEWithUncertainty", iterations=300, depth=4,
+                               posterior_sampling=True, verbose=0, random_seed=seed, thread_count=4).fit(Xc, zc)
+        p = cb.virtual_ensembles_predict(Xq, prediction_type="TotalUncertainty", virtual_ensembles_count=10)
+        mean, knowledge, data = p[:, 0], np.maximum(p[:, 1], 0), np.maximum(p[:, 2], 0)
+        return {"cb_knowledge": knowledge, "cb_data": data,
+                "cb_nll": np.clip(_gaussian_nll(mean, np.sqrt(knowledge + data), zq), -50, 50)}
+
+    return _predict_columns(X_fit, X_query, seed, fit_predict, max_context, max_target_columns,
+                            max_input_features, cache=cache, name="catboost")
+
+
+def tabpfn_ens_scores(X_fit, X_query, seed=0, max_context=1000, max_target_columns=10,
+                      max_input_features=100, n_members=4, query_batch=2000, device="auto", cache=None):
+    """
+    TabPFN regressor ensemble disagreement: `n_members` single-estimator
+    models with different random seeds (different feature/row permutations).
+      tpe_disagree  variance of the members' means = epistemic proxy
+      tpe_aleatoric mean of the members' predictive variances
+      tpe_total     disagree + aleatoric (the law of total variance)
+    """
+    import torch
+    from tabpfn import TabPFNRegressor
+
+    def fit_predict(Xc, zc, Xq, zq, seed):
+        means, variances = [], []
+        for m in range(n_members):
+            reg = TabPFNRegressor(n_estimators=1, device=device, random_state=seed * 100 + m,
+                                  ignore_pretraining_limits=True).fit(Xc, zc)
+            mu, var = np.empty(len(Xq)), np.empty(len(Xq))
+            for start in range(0, len(Xq), query_batch):
+                sl = slice(start, start + query_batch)
+                out = reg.predict(Xq[sl], output_type="full")
+                with torch.no_grad():
+                    mu[sl] = out["criterion"].mean(out["logits"]).cpu().numpy()
+                    var[sl] = out["criterion"].variance(out["logits"]).clamp_min(0).cpu().numpy()
+            means.append(mu); variances.append(var)
+        means, variances = np.array(means), np.array(variances)
+        disagree, alea = means.var(axis=0), variances.mean(axis=0)
+        return {"tpe_disagree": np.sqrt(disagree), "tpe_aleatoric": np.sqrt(alea),
+                "tpe_total": np.sqrt(disagree + alea)}
+
+    return _predict_columns(X_fit, X_query, seed, fit_predict, max_context, max_target_columns,
+                            max_input_features, cache=cache, name="tabpfn_ens")
+
+
+SCORES["gp"] = gp_scores
+SCORES["catboost"] = catboost_scores
+SCORES["tabpfn_ens"] = tabpfn_ens_scores
