@@ -71,8 +71,12 @@ def dot_plot(w, order, title, name, note=None, xlim=(0.4, 0.88)):
         m = w[s].mean(); lo, hi = boot_ci(w[s].values, rng)
         ax.plot([lo, hi], [y, y], color=C[fam], lw=2, solid_capstyle="round")
         ax.plot(m, y, "o", color=C[fam], ms=8, mec="white", mew=1.5)
-        ax.text(hi + 0.008, y, f"{m:.3f}", va="center", fontsize=9.5, color=C["grey"])
-    ax.axvline(0.5, color=C["grey"], ls=":", lw=1); ax.text(0.5, -0.9, "chance", ha="center", fontsize=9, color=C["grey"])
+        ax.text(hi + 0.008, y, f"{m:.3f}", va="center", fontsize=9.5, color=C["grey"],
+                bbox=dict(facecolor="white", edgecolor="none", pad=1.5))
+    ax.set_ylim(-0.7, len(order) - 0.3 + 0.9)
+    ax.axvline(0.5, color=C["grey"], ls=":", lw=1)
+    ax.text(0.5, len(order) - 0.3 + 0.55, "chance (0.5)", ha="center", va="center", fontsize=9, color=C["grey"],
+            bbox=dict(facecolor=plt.rcParams["figure.facecolor"], edgecolor="none", pad=1.5))
     ax.set_yticks(ys); ax.set_yticklabels([LABELS[s][0] for s in order])
     for t, s in zip(ax.get_yticklabels(), order):
         t.set_color(C[LABELS[s][1]] if LABELS[s][1] != "old" else C["grey"])
@@ -125,10 +129,11 @@ def main() -> None:
         ax.scatter(w.loc[odd, x], w.loc[odd, "tabpfnreg_std"], s=26, color=C["uncertainty"], alpha=0.85, label="OddBench")
         ax.scatter(w.loc[~odd, x], w.loc[~odd, "tabpfnreg_std"], s=26, facecolor="white", edgecolor=C["uncertainty"], lw=1.4, label="OvRBench")
         ax.plot([0, 1], [0, 1], color=C["grey"], lw=1); ax.axhline(0.5, color=C["grey"], ls=":", lw=0.8); ax.axvline(0.5, color=C["grey"], ls=":", lw=0.8)
-        ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_xlabel(xl); ax.set_ylabel("TabPFN width · regressor (AUROC)")
+        ax.set_xlim(-0.02, 1.02); ax.set_ylim(-0.02, 1.02); ax.set_xlabel(xl); ax.set_ylabel("TabPFN width · regressor (AUROC)")
         ax.set_title(ttl, loc="left", fontsize=11); ax.grid(color=C["rule"], lw=0.5)
-    axes[0].text(0.03, 0.93, "above the line = better\nwithout bins", fontsize=9, color=C["grey"], va="top")
-    axes[1].text(0.03, 0.93, "below the line = kNN better", fontsize=9, color=C["grey"], va="top")
+    box = dict(facecolor="white", edgecolor=C["rule"], pad=4)
+    axes[0].text(0.04, 0.30, "above the line =\nbetter without bins", fontsize=9.5, color=C["ink"], va="top", bbox=box)
+    axes[1].text(0.06, 0.93, "below the line = kNN better", fontsize=9.5, color=C["ink"], va="top", bbox=box)
     axes[0].legend(frameon=False, fontsize=9, loc="lower right")
     fig.suptitle("One point per dataset", x=0.01, ha="left", fontsize=12); fig.tight_layout()
     save(fig, "fig4_q1_scatters")
@@ -165,17 +170,22 @@ def main() -> None:
     base_rate = float(q2.drop_duplicates("dataset").anomaly_rate.mean())
     numbers["q2"] = {"anomaly_rate": round(base_rate, 3), "precision_at_5pct": {a: round(float(q2w[("prec@5pct", a)].mean()), 3) for a in arms},
                      "std_wins_vs_knn_at_5pct": f"{int((q2w[('prec@5pct','std')] > q2w[('prec@5pct','knn')]).sum())}/{int((q2w[('prec@5pct','std')] != q2w[('prec@5pct','knn')]).sum())}"}
-    fig, ax = plt.subplots(figsize=(8, 4))
-    x = np.arange(len(arms)); wdt = 0.26
-    for k, (m, lab) in enumerate([("prec@1pct", "top 1%"), ("prec@5pct", "top 5%"), ("prec@10pct", "top 10%")]):
+    fig, ax = plt.subplots(figsize=(9.5, 4.6))
+    x = np.arange(len(arms)); wdt = 0.25
+    from matplotlib.patches import Patch
+    for k, (m, lab) in enumerate([("prec@1pct", "top 1% reviewed"), ("prec@5pct", "top 5%"), ("prec@10pct", "top 10%")]):
         vals = [q2w[(m, a)].mean() for a in arms]
         bars = ax.bar(x + (k - 1) * wdt, vals, wdt, color=[C[arm_fam[a]] for a in arms], alpha=[1.0, 0.7, 0.45][k], edgecolor="white")
         if k == 1:
-            for b, v in zip(bars, vals): ax.text(b.get_x() + b.get_width() / 2, v + 0.01, f"{v:.2f}", ha="center", fontsize=9, color=C["ink"])
-    ax.axhline(base_rate, color=C["grey"], ls="--", lw=1); ax.text(len(arms) - 0.5, base_rate + 0.01, f"random list: {base_rate:.2f}", ha="right", fontsize=9, color=C["grey"])
-    ax.set_xticks(x); ax.set_xticklabels([arm_lab[a] for a in arms]); ax.set_ylim(0, 0.65)
-    ax.set_ylabel("share of the alert list that is truly anomalous"); ax.grid(axis="y", color=C["rule"], lw=0.6)
-    ax.set_title("Q2 · Review budget: which score fills the list with real anomalies?  (dark = top 1%, mid = top 5%, light = top 10%)", loc="left", fontsize=10.5, pad=12)
+            for b, v in zip(bars, vals): ax.text(b.get_x() + b.get_width() / 2, v + 0.012, f"{v:.2f}", ha="center", fontsize=9.5, color=C["ink"])
+    ax.axhline(base_rate, color=C["grey"], ls="--", lw=1)
+    ax.set_xticks(x); ax.set_xticklabels([arm_lab[a].replace(" + ", " +" + chr(10)).replace("TabPFN ", "TabPFN" + chr(10)).replace("kNN distance", "kNN" + chr(10) + "distance") for a in arms])
+    ax.set_ylim(0, 0.6); ax.set_ylabel("share of the alert list that is truly anomalous"); ax.grid(axis="y", color=C["rule"], lw=0.6)
+    from matplotlib.lines import Line2D
+    handles = [Patch(facecolor=C["grey"], alpha=al, label=l) for al, l in [(1.0, "top 1% reviewed"), (0.7, "top 5% reviewed"), (0.45, "top 10% reviewed")]]
+    handles.append(Line2D([], [], color=C["grey"], ls="--", label=f"a random list ({base_rate:.2f})"))
+    ax.legend(handles=handles, loc="lower left", bbox_to_anchor=(0, 1.0), ncol=4, frameon=False, fontsize=9, handlelength=1.6, columnspacing=1.4)
+    ax.set_title("Q2 · Review budget: which score fills the list with real anomalies?", loc="left", fontsize=11.5, pad=30)
     save(fig, "fig6_q2_budget")
 
     # ---------------- Q3: guarantees and power ----------------
@@ -241,17 +251,28 @@ def main() -> None:
                              "sensitivity": sens.to_dict()}
 
     # ---------------- pipeline figure ----------------
-    fig, ax = plt.subplots(figsize=(11, 2.6)); ax.axis("off")
-    steps = [("normal rows only", "training data\n(no labels needed)"), ("predict each column\nfrom the others", "TabPFN / GP / CatBoost"),
-             ("read the answer", "uncertainty = width\nerror = surprise"), ("compare with\nknown-normal rows", "conformal p-value"),
-             ("bet against\n'normal'", "e-value"), ("cut the ranked list", "e-BH → alert list,\nfalse alarms ≤ 10%")]
-    for i, (h, s) in enumerate(steps):
-        x = i * 1.8
-        ax.add_patch(plt.Rectangle((x, 0.2), 1.55, 1.3, fc="white", ec=C["rule"], lw=1.2))
-        ax.text(x + 0.775, 1.15, h, ha="center", va="center", fontsize=9.5, color=C["ink"], weight="bold")
-        ax.text(x + 0.775, 0.55, s, ha="center", va="center", fontsize=8.5, color=C["grey"])
-        if i < len(steps) - 1: ax.annotate("", xy=(x + 1.8, 0.85), xytext=(x + 1.55, 0.85), arrowprops=dict(arrowstyle="->", color=C["grey"]))
-    ax.set_xlim(-0.1, 1.8 * len(steps)); ax.set_ylim(0, 1.7)
+    NL = chr(10)
+    fig, ax = plt.subplots(figsize=(13, 3.1)); ax.axis("off")
+    steps = [("normal rows only", "training data;" + NL + "no labels needed"),
+             ("predict each column" + NL + "from the others", "TabPFN, GP, CatBoost"),
+             ("read the answer", "uncertainty = width" + NL + "error = surprise"),
+             ("compare with" + NL + "known-normal rows", "conformal p-value"),
+             ("bet against" + NL + "'normal'", "e-value"),
+             ("cut the ranked list", "e-BH: alert list with" + NL + "false alarms <= 10%")]
+    W, GAP = 2.0, 0.35
+    for i, (h, sub) in enumerate(steps):
+        x = i * (W + GAP)
+        ax.add_patch(plt.Rectangle((x, 0.25), W, 1.35, fc="white", ec=C["rule"], lw=1.2))
+        ax.text(x + W / 2, 1.22, h, ha="center", va="center", fontsize=9.5, color=C["ink"], weight="bold", linespacing=1.15)
+        ax.text(x + W / 2, 0.62, sub, ha="center", va="center", fontsize=8.5, color=C["grey"], linespacing=1.2)
+        if i < len(steps) - 1:
+            ax.annotate("", xy=(x + W + GAP, 0.93), xytext=(x + W, 0.93), arrowprops=dict(arrowstyle="->", color=C["grey"], lw=1.2))
+    # brackets for the two halves
+    for (i0, i1, label, col) in [(0, 2, "make a score  (one per row, larger = less normal)", C["uncertainty"]), (3, 5, "turn any score into alerts with a guarantee", C["baseline"])]:
+        x0, x1 = i0 * (W + GAP), i1 * (W + GAP) + W
+        ax.plot([x0, x0, x1, x1], [1.75, 1.85, 1.85, 1.75], color=col, lw=1.2)
+        ax.text((x0 + x1) / 2, 1.98, label, ha="center", va="bottom", fontsize=9.5, color=col, weight="bold")
+    ax.set_xlim(-0.15, len(steps) * (W + GAP) - GAP + 0.15); ax.set_ylim(0, 2.45)
     save(fig, "fig1_pipeline")
 
     json.dump(numbers, open(OUT / "numbers.json", "w"), indent=2)
