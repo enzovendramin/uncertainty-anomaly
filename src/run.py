@@ -97,6 +97,9 @@ def evaluate_one(d: Dataset, score_name: str, seed: int, q: float,
     out = score_fn(X_fit, np.vstack([X_calib, X_test]), seed, **kwargs)
     if not isinstance(out, dict):
         out = {score_name: out}
+    for name, arr in out.items():
+        if not np.isfinite(arr).all():
+            raise ValueError(f"score {name} has {(~np.isfinite(arr)).sum()} non-finite values")
     seconds = round(time.time() - t0, 2)
 
     if out_dir is not None:

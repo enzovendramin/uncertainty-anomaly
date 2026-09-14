@@ -223,7 +223,7 @@ def tabpfn_reg_scores(
 
       tabpfnreg_std      predictive standard deviation        uncertainty
       tabpfnreg_width90  width of the 90% predictive interval uncertainty
-      tabpfnreg_nll      -log density of the observed value   error
+      tabpfnreg_nll      -log density of the observed value   error (capped at 50)
       tabpfnreg_pit      |2 * CDF(observed) - 1|              error (rank-based, robust)
 
     Columns with fewer than `min_unique` distinct values are skipped
@@ -267,7 +267,9 @@ def tabpfn_reg_scores(
                 std[sl] = crit.variance(logits).clamp_min(0).sqrt().cpu().numpy()
                 q = crit.quantile(logits, center_prob=0.9)
                 width[sl] = (q[..., 1] - q[..., 0]).cpu().numpy()
-                nll[sl] = -torch.log(crit.pdf(logits, z).clamp_min(1e-12)).cpu().numpy()
+                # criterion.forward IS the negative log-density (its .pdf() is
+                # inverted in tabpfn 2.1.x); cap at 50 = "beyond the support"
+                nll[sl] = crit.forward(logits, z).clamp(-50, 50).cpu().numpy()
                 cdf[sl] = crit.cdf(logits, z[:, None]).squeeze(-1).cpu().numpy()
                 mean[sl] = crit.mean(logits).cpu().numpy()
 
