@@ -184,7 +184,8 @@ def main() -> None:
         datasets = datasets[: args.max_datasets]
     print(f"{len(datasets)} datasets, scores={args.scores}, seeds={args.seeds}, q={args.q}")
 
-    rows = []
+    # keep rows from earlier runs with the same tag (e.g. other scores or seeds)
+    rows = pd.read_csv(out_path).to_dict("records") if out_path.exists() else []
     for i, d in enumerate(datasets, 1):
         for score_name in args.scores:
             for seed in args.seeds:
