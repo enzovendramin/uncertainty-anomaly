@@ -10,10 +10,10 @@ Arms (fixed in advance, no tuning on test labels):
     std        TabPFN regressor predictive std                     (uncertainty)
     nll        TabPFN regressor negative log-density               (error)
     knn+std, knn+nll, std+nll, knn+std+nll
-               combinations: each score becomes a conformal p-value against its
-               own calibration scores, p is turned into an e-value with the
-               calibrator e = 0.5 / sqrt(p), and the e-values are AVERAGED with
-               equal weights. Scale-free, label-free, and still a valid e-value.
+               combinations: each part becomes a conformal p-value against its
+               own calibration scores and the parts are merged as the mean of
+               -log p (equal weights, fixed in advance). Scale-free and
+               label-free; see arms.combined_score.
 
 Budgets: k = number of anomalies in the test set, and k = 1%, 5%, 10% of the
 test set (at least 1). Metrics: precision@k, AUPRC (baseline = anomaly rate).
@@ -25,47 +25,22 @@ Usage:
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from scipy.stats import binomtest
 from sklearn.metrics import average_precision_score, roc_auc_score
-from sklearn.model_selection import train_test_split
 
-from conformal import conformal_pvalues, p_to_e
-from data import load
-from run import RESULTS_DIR, ROOT, git_commit, precision_at_k
-from scores import knn_score
-
-ARMS = ["knn", "std", "nll", "knn+std", "knn+nll", "std+nll", "knn+std+nll"]
+from arms import ARMS, arm_scores, load_records
+from run import RESULTS_DIR, git_commit, precision_at_k
 
 
 def load_rows(tag: str, seed: int):
-    """One record per dataset: test labels and per-row scores for every arm."""
-    for f in sorted((RESULTS_DIR / tag / "scores").glob(f"*__s{seed}__tabpfn_reg.npz")):
-        bench, name, _, _ = f.name.split("__")
-        z = np.load(f)
-        d = load(ROOT / "data" / bench / "representative" / f"{name}.npz")
-        n_calib = int(z["n_calib"])
-        calib_idx, test_idx, y = z["calib_idx"], z["test_idx"], z["y_test"]
-
-        # the fit rows are the complement of the (uncapped) calibration split
-        fit_idx, _ = train_test_split(np.arange(len(d.X_train)), test_size=0.3, random_state=seed)
-        knn = knn_score(d.X_train[fit_idx], np.vstack([d.X_train[calib_idx], d.X_test[test_idx]]), seed)
-
-        base = {"knn": knn, "std": z["tabpfnreg_std"], "nll": z["tabpfnreg_nll"]}
+    """One record per dataset: test labels and per-row test scores for every arm."""
+    for rec in load_records(tag, seed):
         rng = np.random.default_rng(seed)
-        # p-values for every base score, then e-values; combinations average the e-values
-        evals = {}
-        for k, s in base.items():
-            p = conformal_pvalues(s[:n_calib], s[n_calib:], rng=rng)
-            evals[k] = p_to_e(p, kappa=0.5)
-        test_scores = {k: s[n_calib:] for k, s in base.items()}
-        for combo in ARMS[3:]:
-            parts = combo.split("+")
-            test_scores[combo] = np.mean([evals[p] for p in parts], axis=0)
-        yield bench, name, y, test_scores, d.n_features
+        test_scores = {arm: arm_scores(rec, arm, rng)[1] for arm in ARMS}
+        yield rec.bench, rec.dataset, rec.y, test_scores, rec.n_features
 
 
 def main() -> None:
