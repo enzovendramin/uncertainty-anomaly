@@ -39,6 +39,8 @@ Scores compared:
 | `tabpfn_error` | $1 - \hat p(\text{observed bin})$, TabPFN predicting each column from the others (as TabPFN-OD) |
 | `tabpfn_entropy` | $H(\hat p)/\log K$ — uncertainty, blind to the observed value |
 | `tabpfn_setsize` | $\lvert\{y : 1-\hat p(y) \le \hat q\}\rvert / K$ — the same through a conformal set (LAC, $\alpha = 0.1$) |
+| `tabpfnreg_std`, `tabpfnreg_width90` | predictive std / 90% interval width of the TabPFN *regressor* (no binning): uncertainty that can grow away from the data |
+| `tabpfnreg_nll`, `tabpfnreg_pit` | $-\log \hat p(x_j)$ and $\lvert 2F(x_j)-1\rvert$ from the same predictive distribution: error-type |
 
 ## Data
 
