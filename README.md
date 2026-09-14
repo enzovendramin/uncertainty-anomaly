@@ -47,6 +47,13 @@ One `.npz` per dataset; `train` holds normal points only, `test` holds normal po
 anomalies with labels. The normal train set is split 70/30 into fit and calibration;
 test labels are used only for evaluation (`splits.md`).
 
+Per-row scores and raw model outputs are saved under `results/<tag>/` so new
+measures and combinations are computed offline. Conformal p-values break ties
+at random (seeded), and every results row records the git commit.
+
+Known data caveat: about 18% of the representative datasets have more than 10%
+duplicate rows in `train`, a few over 90%; this favours distance-based scores.
+
 ## Usage
 
 ```bash
@@ -54,7 +61,7 @@ pip install -r requirements.txt
 python -m pytest tests                       # guarantees on simulated data
 python src/data.py                           # download the representative subsets
 python src/run.py --scores knn iforest --seeds 0 1 2 --tag baseline
-python src/run.py --scores tabpfn --seeds 0 --max-calib 3000 --max-test 4000 --tag tabpfn
+python src/run.py --scores tabpfn tabpfn_reg --seeds 0 --max-calib 3000 --max-test 4000 --tag tabpfn
 python src/summarize.py results/baseline.csv
 ```
 

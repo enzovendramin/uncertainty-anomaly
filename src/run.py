@@ -6,7 +6,9 @@ The driver: for every dataset and every score function,
     3. p-values, e-values, BH and e-BH at level q
     4. evaluate on the test labels
 
-and write one row per (dataset, score, seed) to results/<tag>.csv.
+and write one row per (dataset, score, seed) to results/<tag>.csv, plus
+per-row scores to results/<tag>/scores/ and raw model outputs (when the score
+provides them) to results/<tag>/raw/, so further analysis is offline.
 Test labels are used ONLY in step 4. See splits.md.
 
 Usage:
@@ -16,6 +18,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import inspect
+import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +44,16 @@ ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR = ROOT / "results"
 
 
+def git_commit() -> str:
+    """Short commit hash, with '+' if the working tree has uncommitted changes."""
+    try:
+        h = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, text=True).strip()
+        dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True).strip() != ""
+        return h + ("+" if dirty else "")
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
 def precision_at_k(scores: np.ndarray, y: np.ndarray, k: int) -> float:
     """Among the k highest-scored points, what fraction are anomalies?"""
     if k <= 0:
@@ -50,33 +64,48 @@ def precision_at_k(scores: np.ndarray, y: np.ndarray, k: int) -> float:
 
 def evaluate_one(d: Dataset, score_name: str, seed: int, q: float,
                  calib_frac: float = 0.3, max_test: int | None = None,
-                 max_calib: int | None = None) -> list[dict]:
+                 max_calib: int | None = None, out_dir: Path | None = None) -> list[dict]:
     """
     Returns one row per score. A score function may return a single array or
     a dict of named arrays (e.g. TabPFN gives error, entropy and set size from
     one pass); each named array becomes its own row.
+    If `out_dir` is given, per-row scores go to out_dir/scores/ and raw model
+    outputs to out_dir/raw/.
     """
     score_fn = SCORES[score_name]
     t0 = time.time()
+    rng = np.random.default_rng(seed)
 
-    # 1. split the normal training points: fit / calibration
-    X_fit, X_calib = train_test_split(d.X_train, test_size=calib_frac, random_state=seed)
+    # 1. split the normal training points: fit / calibration (indices kept for the record)
+    fit_idx, calib_idx = train_test_split(np.arange(len(d.X_train)), test_size=calib_frac, random_state=seed)
     # optional cap on calibration rows: a random subset of normal points is
     # still a valid calibration set, and a few thousand is plenty for p-values
-    if max_calib is not None and len(X_calib) > max_calib:
-        X_calib = X_calib[np.random.default_rng(seed).choice(len(X_calib), max_calib, replace=False)]
-
+    if max_calib is not None and len(calib_idx) > max_calib:
+        calib_idx = rng.choice(calib_idx, max_calib, replace=False)
     # optional: random subset of the test rows (labels are NOT looked at)
-    X_test, y = d.X_test, d.y_test
-    if max_test is not None and len(y) > max_test:
-        keep = np.random.default_rng(seed).choice(len(y), max_test, replace=False)
-        X_test, y = X_test[keep], y[keep]
+    test_idx = np.arange(len(d.X_test))
+    if max_test is not None and len(test_idx) > max_test:
+        test_idx = rng.choice(test_idx, max_test, replace=False)
+    X_fit, X_calib = d.X_train[fit_idx], d.X_train[calib_idx]
+    X_test, y = d.X_test[test_idx], d.y_test[test_idx]
 
     # 2. scores (larger = less normal), one pass over calibration + test rows
-    out = score_fn(X_fit, np.vstack([X_calib, X_test]), seed)
+    stem = f"{d.bench}__{d.name}__s{seed}"
+    kwargs = {}
+    if out_dir is not None and "cache" in inspect.signature(score_fn).parameters:
+        kwargs["cache"] = out_dir / "raw" / stem
+    out = score_fn(X_fit, np.vstack([X_calib, X_test]), seed, **kwargs)
     if not isinstance(out, dict):
         out = {score_name: out}
     seconds = round(time.time() - t0, 2)
+
+    if out_dir is not None:
+        (out_dir / "scores").mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            out_dir / "scores" / f"{stem}__{score_name}.npz",
+            calib_idx=calib_idx, test_idx=test_idx, y_test=y, n_calib=len(calib_idx),
+            **{k: v.astype(np.float32) for k, v in out.items()},
+        )
 
     rows = []
     for name, s_all in out.items():
@@ -86,8 +115,8 @@ def evaluate_one(d: Dataset, score_name: str, seed: int, q: float,
 
 
 def _evaluate_scores(d, score_name, seed, q, X_fit, X_calib, s_calib, s_test, y, seconds) -> dict:
-    # 3. the conformal / e-value layer
-    p = conformal_pvalues(s_calib, s_test)
+    # 3. the conformal / e-value layer (ties broken at random, seeded)
+    p = conformal_pvalues(s_calib, s_test, rng=np.random.default_rng(seed))
     e = conformal_evalues(s_calib, s_test, q=q)
     flag_bh = bh(p, q=q)
     flag_ebh = ebh(e, q=q)
@@ -141,6 +170,9 @@ def main() -> None:
     RESULTS_DIR.mkdir(exist_ok=True)
     tag = args.tag or f"{datetime.now():%Y%m%d}_{'_'.join(args.scores)}"
     out_path = RESULTS_DIR / f"{tag}.csv"
+    out_dir = RESULTS_DIR / tag
+    commit = git_commit()
+    print(f"code version: {commit}")
 
     datasets = []
     for bench in args.benches:
@@ -155,13 +187,15 @@ def main() -> None:
             for seed in args.seeds:
                 try:
                     new_rows = evaluate_one(d, score_name, seed, args.q,
-                                            max_test=args.max_test, max_calib=args.max_calib)
+                                            max_test=args.max_test, max_calib=args.max_calib,
+                                            out_dir=out_dir)
                 except Exception as exc:  # keep going, record the failure
                     print(f"[{i:3d}/{len(datasets)}] {d.bench:8s} {d.name[:32]:32s} {score_name:8s} seed={seed} FAILED: {exc!r}")
                     continue
                 for row in new_rows:
                     row["max_test"] = args.max_test
                     row["max_calib"] = args.max_calib
+                    row["commit"] = commit
                     rows.append(row)
                     print(
                         f"[{i:3d}/{len(datasets)}] {d.bench:8s} {d.name[:32]:32s} {row['score']:15s} seed={seed} "

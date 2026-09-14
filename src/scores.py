@@ -83,6 +83,7 @@ def tabpfn_scores(
     alpha: float = 0.1,
     query_batch: int = 2000,
     device: str = "auto",
+    cache: "Path | None" = None,
 ) -> dict[str, np.ndarray]:
     """
     Ask TabPFN to predict each column from the other columns, using only
@@ -106,6 +107,9 @@ def tabpfn_scores(
       max_input_features  how many other columns are given as input
     A slice (20%) of the context rows is held out to pick the conformal
     threshold for `setsize`, so it never sees the query rows.
+
+    If `cache` is given, the raw per-column probabilities are saved there
+    (rows x columns x bins) so any other measure can be computed offline.
     """
     from tabpfn import TabPFNClassifier
 
@@ -123,6 +127,7 @@ def tabpfn_scores(
     targets = rng.permutation(d)[: min(d, max_target_columns)]
 
     sums = {k: np.zeros(len(X_query)) for k in ("tabpfn_error", "tabpfn_entropy", "tabpfn_setsize")}
+    raw = {"targets": [], "K": [], "q_hat": [], "probs": [], "y_bin": []}
     n_done = 0
     for j in targets:
         y_ctx, y_rest, K = _bin_column(
@@ -162,10 +167,123 @@ def tabpfn_scores(
         sums["tabpfn_entropy"] += ent / np.log(K)
         sums["tabpfn_setsize"] += sets.sum(axis=1) / K
         n_done += 1
+        raw["targets"].append(j); raw["K"].append(K); raw["q_hat"].append(q_hat)
+        raw["probs"].append(p_query.astype(np.float32)); raw["y_bin"].append(y_query.astype(np.int16))
 
     if n_done == 0:
         raise RuntimeError("no column could be predicted (all constant?)")
+    if cache is not None:
+        _save_raw(cache, "tabpfn", raw)
     return {k: v / n_done for k, v in sums.items()}
 
 
+def _save_raw(cache, name, raw):
+    """Save per-column raw outputs, padding ragged arrays with NaN."""
+    from pathlib import Path
+    out = {}
+    for k, v in raw.items():
+        if k in ("targets", "K", "q_hat"):
+            out[k] = np.asarray(v)
+        else:
+            width = max(a.shape[1] if a.ndim > 1 else 1 for a in v)
+            stacked = np.full((len(v), len(v[0]), width), np.nan, dtype=np.float32)
+            for c, a in enumerate(v):
+                a = a if a.ndim > 1 else a[:, None]
+                stacked[c, :, : a.shape[1]] = a
+            out[k] = stacked          # (columns, rows, width)
+    Path(cache).parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(Path(cache).with_name(Path(cache).name + f"__{name}_raw.npz"), **out)
+
+
 SCORES["tabpfn"] = tabpfn_scores
+
+
+def tabpfn_reg_scores(
+    X_fit: np.ndarray,
+    X_query: np.ndarray,
+    seed: int = 0,
+    max_context: int = 1000,
+    max_target_columns: int = 10,
+    max_input_features: int = 100,
+    min_unique: int = 11,
+    n_estimators: int = 2,
+    query_batch: int = 2000,
+    device: str = "auto",
+    cache: "Path | None" = None,
+) -> dict[str, np.ndarray]:
+    """
+    Same idea as `tabpfn_scores` but each numeric column is predicted with
+    TabPFN's REGRESSOR, which outputs a full predictive distribution. No
+    binning, so "how far outside the normal range" is preserved, and the
+    predictive spread is free to grow away from the data (it does: on toy
+    data the std goes from 0.3 at the centre to >100 far away).
+
+    Per row, averaged over the predicted columns (targets are z-scored with
+    the context mean/std so columns are comparable):
+
+      tabpfnreg_std      predictive standard deviation        uncertainty
+      tabpfnreg_width90  width of the 90% predictive interval uncertainty
+      tabpfnreg_nll      -log density of the observed value   error
+      tabpfnreg_pit      |2 * CDF(observed) - 1|              error (rank-based, robust)
+
+    Columns with fewer than `min_unique` distinct values are skipped
+    (they are categorical-like; use `tabpfn_scores` for those).
+    """
+    import torch
+    from tabpfn import TabPFNRegressor
+
+    rng = np.random.default_rng(seed)
+    n_fit, d = X_fit.shape
+    ctx_rows = rng.permutation(n_fit)[: min(n_fit, max_context)]
+    targets = [j for j in rng.permutation(d) if len(np.unique(X_fit[ctx_rows, j])) >= min_unique]
+    targets = targets[:max_target_columns]
+
+    names = ("tabpfnreg_std", "tabpfnreg_width90", "tabpfnreg_nll", "tabpfnreg_pit")
+    sums = {k: np.zeros(len(X_query)) for k in names}
+    raw = {"targets": [], "std": [], "width90": [], "nll": [], "cdf": [], "mean": []}
+    for j in targets:
+        mu, sd = X_fit[ctx_rows, j].mean(), X_fit[ctx_rows, j].std() + 1e-12
+        z_ctx = (X_fit[ctx_rows, j] - mu) / sd
+        z_query = (X_query[:, j] - mu) / sd
+
+        others = np.array([c for c in range(d) if c != j])
+        if len(others) > max_input_features:
+            others = rng.choice(others, max_input_features, replace=False)
+
+        reg = TabPFNRegressor(
+            n_estimators=n_estimators, device=device, random_state=seed,
+            ignore_pretraining_limits=True,
+        )
+        reg.fit(X_fit[np.ix_(ctx_rows, others)], z_ctx)
+
+        std = np.empty(len(X_query)); width = np.empty(len(X_query))
+        nll = np.empty(len(X_query)); cdf = np.empty(len(X_query)); mean = np.empty(len(X_query))
+        for start in range(0, len(X_query), query_batch):
+            sl = slice(start, start + query_batch)
+            out = reg.predict(X_query[sl][:, others], output_type="full")
+            logits, crit = out["logits"], out["criterion"]
+            with torch.no_grad():
+                z = torch.as_tensor(z_query[sl], dtype=logits.dtype, device=logits.device)
+                std[sl] = crit.variance(logits).clamp_min(0).sqrt().cpu().numpy()
+                q = crit.quantile(logits, center_prob=0.9)
+                width[sl] = (q[..., 1] - q[..., 0]).cpu().numpy()
+                nll[sl] = -torch.log(crit.pdf(logits, z).clamp_min(1e-12)).cpu().numpy()
+                cdf[sl] = crit.cdf(logits, z[:, None]).squeeze(-1).cpu().numpy()
+                mean[sl] = crit.mean(logits).cpu().numpy()
+
+        sums["tabpfnreg_std"] += std
+        sums["tabpfnreg_width90"] += width
+        sums["tabpfnreg_nll"] += nll
+        sums["tabpfnreg_pit"] += np.abs(2 * cdf - 1)
+        raw["targets"].append(j)
+        for k, v in (("std", std), ("width90", width), ("nll", nll), ("cdf", cdf), ("mean", mean)):
+            raw[k].append(v.astype(np.float32))
+
+    if not targets:
+        raise RuntimeError("no numeric column to predict")
+    if cache is not None:
+        _save_raw(cache, "tabpfnreg", raw)
+    return {k: v / len(targets) for k, v in sums.items()}
+
+
+SCORES["tabpfn_reg"] = tabpfn_reg_scores

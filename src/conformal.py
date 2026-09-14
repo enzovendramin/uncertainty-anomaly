@@ -74,7 +74,8 @@ def coverage(sets: np.ndarray, labels: np.ndarray) -> float:
 # Route 2: conformal p-values and e-values for "is this point normal?"
 # ---------------------------------------------------------------------------
 
-def conformal_pvalues(calib_scores: np.ndarray, test_scores: np.ndarray) -> np.ndarray:
+def conformal_pvalues(calib_scores: np.ndarray, test_scores: np.ndarray,
+                      rng: np.random.Generator | None = None) -> np.ndarray:
     """
     p-value for the hypothesis "this test point is normal".
 
@@ -83,14 +84,23 @@ def conformal_pvalues(calib_scores: np.ndarray, test_scores: np.ndarray) -> np.n
     Small p = the point looks weirder than almost every known-normal point.
     Guarantee: if the point really is normal, P(p <= a) <= a for any a.
     (Bates, Candes, Lei, Romano, Sesia 2023.)
+
+    Ties: counting ">=" is safe but conservative when many scores are equal
+    (e.g. set sizes). Pass an `rng` to break ties at random, which keeps the
+    guarantee and makes the p-values exact (uniform for normal points).
     """
     calib_sorted = np.sort(np.asarray(calib_scores, dtype=float))
     n = len(calib_sorted)
     test_scores = np.asarray(test_scores, dtype=float)
-    # number of calibration scores strictly smaller than each test score
-    n_smaller = np.searchsorted(calib_sorted, test_scores, side="left")
-    n_greater_or_equal = n - n_smaller
-    return (1.0 + n_greater_or_equal) / (n + 1.0)
+    n_greater = n - np.searchsorted(calib_sorted, test_scores, side="right")
+    n_equal = (np.searchsorted(calib_sorted, test_scores, side="right")
+               - np.searchsorted(calib_sorted, test_scores, side="left"))
+    if rng is None:
+        counted_ties = n_equal
+    else:
+        # place the test point at a uniformly random position among its ties
+        counted_ties = np.floor(rng.uniform(size=len(test_scores)) * (n_equal + 1)).astype(int)
+    return (1.0 + n_greater + counted_ties) / (n + 1.0)
 
 
 def conformal_evalues(calib_scores: np.ndarray, test_scores: np.ndarray, q: float = 0.1) -> np.ndarray:

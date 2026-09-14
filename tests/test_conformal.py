@@ -89,6 +89,22 @@ def test_pvalues_are_valid_for_normal_points():
         assert np.mean(h) <= a + 0.01, f"false alarm rate {np.mean(h):.3f} > {a}"
 
 
+def test_pvalues_with_ties_random_breaking_is_valid_and_exact():
+    # discrete scores (like set sizes): without tie-breaking p-values are
+    # conservative; with it they are (nearly) uniform for normal points
+    rng = np.random.default_rng(11)
+    hits_plain, hits_rand = [], []
+    for _ in range(300):
+        calib = rng.integers(0, 5, size=500).astype(float)
+        test = rng.integers(0, 5, size=500).astype(float)
+        hits_plain.append((conformal_pvalues(calib, test) <= 0.1).mean())
+        hits_rand.append((conformal_pvalues(calib, test, rng=rng) <= 0.1).mean())
+    assert np.mean(hits_plain) <= 0.1 + 0.01
+    assert np.mean(hits_rand) <= 0.1 + 0.01
+    assert np.mean(hits_rand) > np.mean(hits_plain)        # less conservative
+    assert abs(np.mean(hits_rand) - 0.1) < 0.01             # and nearly exact
+
+
 def test_ratio_evalue_worked_example():
     calib = np.array([0.02, 0.03, 0.05, 0.05, 0.08, 0.10, 0.15, 0.20, 0.30])  # sums to 0.98
     e = conformal_evalues_ratio(calib, np.array([0.05, 0.40, 0.90]))
