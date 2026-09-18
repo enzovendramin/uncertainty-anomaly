@@ -1,3 +1,5 @@
+Status: work in progress (2026–27 research project). Results below are preliminary and will change.
+
 # Is model uncertainty a measure of anomaly?
 
 Research project, Filière Métiers de la Recherche 2026–27, CentraleSupélec.
